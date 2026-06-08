@@ -1,0 +1,260 @@
+# Architecture Guideline
+## Clean Architecture + Modular Monolith (.NET 8 Web API)
+
+เอกสารฉบับนี้กำหนดแนวทางมาตรฐานในการออกแบบและพัฒนาโปรแกรม
+สำหรับระบบที่ใช้ Clean Architecture ร่วมกับ Modular Monolith
+เหมาะสำหรับทีมพัฒนาที่มีประสบการณ์ และใช้เป็นเอกสารอ้างอิงกลางของโครงการ
+
+วัตถุประสงค์ของเอกสารนี้คือ
+- กำหนดขอบเขตและความรับผิดชอบของแต่ละ layer ให้ชัดเจน
+- ป้องกันการกระจายของ business logic
+- ทำให้โค้ดมีโครงสร้างที่คงทน ดูแลรักษาได้ในระยะยาว
+
+---
+
+## 1. Architectural Overview
+
+ระบบถูกออกแบบในรูปแบบ Modular Monolith
+โดยแบ่งออกเป็นหลาย Module ตามขอบเขตธุรกิจ (Bounded Context)
+แต่ยังคง deploy เป็นหน่วยเดียว
+
+แต่ละ Module ต้องมีขอบเขตความรับผิดชอบที่ชัดเจน
+และต้องไม่พึ่งพา implementation ภายในของ Module อื่นโดยตรง
+
+แนวคิดหลักของสถาปัตยกรรมนี้คือ
+- แยก business logic ออกจาก infrastructure และ presentation
+- บังคับทิศทาง dependency ให้ไหลจากชั้นนอกเข้าสู่ชั้นใน
+- รองรับการเปลี่ยนแปลงในอนาคตโดยไม่ทำให้โครงสร้างเปราะบาง
+
+---
+
+## 2. Database Design Principles
+
+### 2.1 Primary Key
+
+ระบบใช้ UUID (GUID) เป็น Primary Key สำหรับทุกตาราง
+เพื่อลด coupling ระหว่างระบบ
+และรองรับ integration หรือ distributed scenario ในอนาคต
+
+### 2.2 Multi-Language Support
+
+ระบบรองรับข้อมูลหลายภาษาโดยใช้ PostgreSQL `jsonb`
+กำหนดให้ key ของภาษาเป็นตัวพิมพ์ใหญ่ เช่น `TH`, `EN`
+
+ตัวอย่างรูปแบบข้อมูล:
+
+    {
+      "TH": "ชื่อสินค้า",
+      "EN": "Product Name"
+    }
+
+ฐานข้อมูลมีหน้าที่จัดเก็บข้อมูลและ enforce technical constraint เท่านั้น
+เช่น primary key, foreign key และ index
+ฐานข้อมูลต้องไม่ทำ business validation
+
+---
+
+## 3. Modular Monolith Rules
+
+- แต่ละ Module แทนขอบเขตธุรกิจที่ชัดเจน
+- ห้ามเรียก service, repository หรือ DbContext ข้าม module โดยตรง
+- การสื่อสารข้าม module ต้องทำผ่าน Domain Event เท่านั้น
+- Module ต้องไม่รู้ implementation ภายในของ module อื่น
+
+---
+
+## 4. Layer Responsibilities
+
+### 4.1 Domain Layer (Core)
+
+Domain Layer เป็นแกนกลางของระบบ
+และเป็นที่อยู่ของ business logic ทั้งหมด
+
+หน้าที่ของ Domain Layer ได้แก่
+- Domain Entity (Model + Behavior)
+- Business Rules และ Invariant
+- Domain Event
+
+แนวทางการออกแบบ Domain
+- Multi-language ใช้ Dictionary<string, string> โดย key เป็น `TH`, `EN`
+- การสร้าง entity ใช้ Factory หรือ Builder
+- การแก้ไข state ใช้ Fluent Updater
+- Domain Event ใช้สื่อสารเหตุการณ์สำคัญของธุรกิจ
+
+### Domain Usage Guideline (CRUD vs Domain Behavior)
+
+ระบบนี้ไม่ได้บังคับให้ทุก feature ต้องมี Domain Behavior เสมอไป  
+การเลือกใช้ Domain ขึ้นอยู่กับความซับซ้อนและลักษณะของ business logic
+
+#### CRUD แบบง่าย (Data-Centric)
+
+ในกรณีที่เป็นโปรแกรมหรือ feature แบบ CRUD ตรงไปตรงมา
+โดยไม่มี business rule ที่ซับซ้อน
+และไม่มีความจำเป็นต้องควบคุม state ของ entity เป็นพิเศษ
+
+แนวทางที่อนุญาต:
+- ไม่จำเป็นต้องมี Domain Behavior
+- Application Layer สามารถดำเนินการ insert / update ได้โดยตรง
+- ไม่จำเป็นต้องใช้ static factory, builder หรือ fluent updater
+- ใช้ EF Core หรือ Dapper ตามความเหมาะสม
+
+กรณีนี้ Domain Entity ทำหน้าที่เป็น data structure เท่านั้น
+โดยไม่ต้องมี behavior เพิ่มเติม
+
+---
+
+#### Domain ที่ต้องมี Behavior (Rule-Centric)
+
+ในกรณีที่ Domain:
+- ถูกใช้งานร่วมกันในหลาย feature
+- มี business rule หรือ invariant ที่ต้อง enforce
+- ต้องควบคุมการเปลี่ยน state อย่างชัดเจน
+- ความผิดพลาดของ state ส่งผลต่อความถูกต้องของระบบ
+
+แนวทางที่ต้องใช้:
+- Domain Entity ต้องมี behavior ของตัวเอง
+- การสร้าง entity ใช้ static factory หรือ builder
+- การแก้ไข state ใช้ fluent updater หรือ method ที่มีความหมายเชิงธุรกิจ
+- Application Layer ต้องเรียกผ่าน Domain เท่านั้น
+- ห้ามแก้ state ของ entity โดยตรงจาก Application
+
+หลักการสำคัญคือ
+Domain ต้องเป็นเจ้าของ business rule และการเปลี่ยน state เสมอ
+
+
+
+ข้อบังคับ
+- Domain ห้าม reference layer อื่น
+- Domain ห้ามรู้จัก database, SQL, HTTP หรือ infrastructure ใด ๆ
+- Domain ต้องป้องกัน invalid state เสมอ
+
+---
+
+### 4.2 Application Layer
+
+Application Layer ทำหน้าที่ orchestrate การทำงานของระบบ
+โดยไม่เป็นเจ้าของ business rule
+
+หน้าที่หลัก
+- CQRS ผ่าน MediatR
+- Command, Query และ Request Handler
+- Input validation ด้วย FluentValidation
+- จัดการ CRUD และ Transaction
+
+ขอบเขตของระบบใน layer นี้
+- รองรับเฉพาะ CRUD และ Transaction
+- ไม่มี process หรือ workflow ข้ามระบบ
+
+#### Query / Request Handler
+
+Query และ Request Handler ใช้สำหรับ read-only หรือ inquiry
+สามารถใช้ได้ทั้ง Dapper และ EF Core
+โดยต้องเข้าถึงฐานข้อมูลผ่าน ICleanDbContext เท่านั้น
+
+กรณีใช้ EF Core
+- Query ที่ไม่ถูกนำไป save ต่อ ต้องใช้ AsNoTracking
+
+กรณีใช้ Dapper
+- เรียกใช้งานผ่าน ICleanDbContext ด้วย API รูปแบบเดียวกับ Dapper ปกติ
+
+หลักการ
+- Query ต้องไม่เปลี่ยน state
+- Query ต้องไม่มี business rule
+
+#### Command Handler
+
+Command Handler ใช้สำหรับการเปลี่ยนแปลงข้อมูล
+Command ต้อง implement ICommand
+ระบบจะเปิด Transaction ให้อัตโนมัติในขอบเขตของ command
+
+หลักการ
+- Command = Write
+- Transaction ถูกควบคุมที่ Application Layer
+- หากมี business rule ต้องเรียก Domain เท่านั้น
+
+ข้อห้าม
+- ห้ามเปิด transaction ซ้อนเองโดยไม่จำเป็น
+- ห้ามเขียน business rule ใน handler
+
+---
+
+### 4.3 Infrastructure Layer
+
+Infrastructure Layer ทำหน้าที่ implement รายละเอียดเชิงเทคนิค
+เพื่อให้ระบบทำงานได้จริง
+
+หน้าที่หลัก
+- EF Core mapping
+- PostgreSQL configuration (รวมถึง jsonb)
+- Integration กับ external infrastructure เช่น database, email หรือ external API
+
+หลักการ
+- Mapping Domain Entity ไปยัง schema ของฐานข้อมูล
+- Implement interface ที่ Application Layer กำหนด
+
+Dependency
+- Infrastructure สามารถ reference Domain และ Application
+- Domain และ Application ห้าม reference Infrastructure
+
+---
+
+### 4.4 Presentation Layer
+
+Backend (Web API)
+- Controller ทำหน้าที่รับ request และส่งต่อไป Application Layer
+- Controller ต้องไม่มี business logic
+- Controller ห้ามเขียน SQL
+
+https://restfulapi.net/resource-naming/
+
+Frontend (Angular)
+- แสดงผลข้อมูล
+- รับ input จากผู้ใช้
+- Validation เพื่อ UX เท่านั้น
+- Business rule ต้องถูก validate ที่ backend เสมอ
+
+---
+
+## 5. Dependency Rules
+
+ทิศทาง dependency ต้องเป็นดังนี้
+
+Presentation → Application → Domain  
+Infrastructure → Application / Domain
+
+ตารางสรุปการอ้างอิง
+
+- Domain: ไม่ reference layer ใด
+- Application: reference Domain
+- Presentation: reference Application
+- Infrastructure: reference Domain และ Application
+
+---
+
+## 6. ICleanDbContext
+
+ICleanDbContext เป็น abstraction กลางสำหรับการเข้าถึงฐานข้อมูล
+เพื่อให้ Application Layer ไม่ผูกกับ implementation ใด implementation หนึ่ง
+
+ความสามารถของ ICleanDbContext
+- เข้าถึง DbSet<T> ผ่าน Set<T>() สำหรับ EF Core
+- เรียกใช้งาน Dapper เช่น QueryAsync, QueryFirstOrDefaultAsync
+
+ข้อบังคับ
+- Application Layer ห้ามอ้างอิง DbContext implementation โดยตรง
+- ห้ามสร้าง connection หรือ transaction เองใน handler
+- การเข้าถึงฐานข้อมูลทุกกรณีต้องผ่าน ICleanDbContext
+
+---
+
+## 7. Guiding Principles
+
+Query มีหน้าที่อ่าน  
+Command มีหน้าที่เปลี่ยน  
+Transaction ต้องเกิดเฉพาะใน Command เท่านั้น
+
+หาก logic ใดหายไปแล้วธุรกิจยังทำงานได้
+logic นั้นไม่ควรอยู่ใน Domain
+
+ระบบนี้ไม่ได้บังคับให้ทุก feature ซับซ้อน
+แต่บังคับให้ business logic อยู่ในตำแหน่งที่ถูกต้อง
